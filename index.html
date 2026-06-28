@@ -826,7 +826,17 @@
   function deliverPdf(blob, filename){
     var url = URL.createObjectURL(blob);
     if(isIOS()){
-      // iOS Safari: navigate to the PDF viewer; user taps Share → Save to Files
+      // Best on iOS: native share sheet with the file (Save to Files / AirDrop / Mail).
+      try{
+        var file = new File([blob], filename, { type:'application/pdf' });
+        if(navigator.canShare && navigator.canShare({ files:[file] })){
+          navigator.share({ files:[file], title:filename })
+            .catch(function(){ window.location.href = url; })  // user cancelled or blocked → viewer
+            .finally(function(){ setTimeout(function(){ URL.revokeObjectURL(url); }, 60000); });
+          return;
+        }
+      }catch(e){ /* fall through */ }
+      // Fallback: open the PDF viewer; user taps Share → Save to Files
       window.location.href = url;
       toast('Opening PDF — tap Share → Save to Files', 'ok');
       setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
