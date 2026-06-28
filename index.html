@@ -817,29 +817,75 @@
 
   function safeName(s){ return String(s||'').replace(/[\\/:*?"<>|]+/g,'-').replace(/\s+/g,' ').trim(); }
 
+  function isIOS(){
+    return /iP(hone|ad|od)/.test(navigator.userAgent) ||
+           (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+  // Cross-platform PDF delivery. iOS Safari ignores the download attribute,
+  // so we open the PDF in a viewer where the user taps Share → Save to Files.
+  function deliverPdf(blob, filename){
+    var url = URL.createObjectURL(blob);
+    if(isIOS()){
+      // iOS Safari: navigate to the PDF viewer; user taps Share → Save to Files
+      window.location.href = url;
+      toast('Opening PDF — tap Share → Save to Files', 'ok');
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+      return;
+    }
+    var a2 = document.createElement('a');
+    a2.href = url; a2.download = filename;
+    document.body.appendChild(a2); a2.click(); document.body.removeChild(a2);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+    toast('PDF downloaded','ok');
+  }
+
+  // wait until all <img> in a node are decoded/loaded (prevents blank PDFs)
+  function imagesReady(node){
+    var imgs = $$('img', node);
+    return Promise.all(imgs.map(function(img){
+      if(img.complete && img.naturalWidth > 0) return Promise.resolve();
+      if(img.decode){ return img.decode().catch(function(){}); }
+      return new Promise(function(res){ img.onload = img.onerror = res; });
+    }));
+  }
+  // wait for web fonts so text isn't dropped from the canvas
+  function fontsReady(){
+    if(document.fonts && document.fonts.ready){
+      return Promise.race([ document.fonts.ready, new Promise(function(r){ setTimeout(r, 3000); }) ]);
+    }
+    return Promise.resolve();
+  }
+
   function exportPdf(id){
+    if(typeof html2pdf === 'undefined'){ toast('PDF library not loaded (check connection)','err'); return; }
     store.get(id).then(function(po){
       if(!po){ toast('Not found','err'); return; }
-      if(typeof html2pdf === 'undefined'){ toast('PDF library not loaded (check connection)','err'); return; }
       var host = $('#pdfHost');
       host.innerHTML = buildSheet(po);
       var sheet = host.firstChild;
       var num = (po.po && po.po.number) || 'draft';
       var filename = 'PO - ' + safeName(num) + ' - Redimas Padangan Teknik.pdf';
       toast('Generating PDF…');
-      html2pdf().set({
-        filename: filename,
-        margin: 0,
-        image: { type:'jpeg', quality:0.98 },
-        html2canvas: { scale:2, useCORS:true, backgroundColor:'#ffffff' },
-        jsPDF: { unit:'mm', format:'a4', orientation:'portrait' },
-        pagebreak: { mode:['css','legacy'] }
-      }).from(sheet).save().then(function(){
+
+      // make sure logo + fonts are fully ready, then a paint frame, before snapshot
+      Promise.all([ imagesReady(host), fontsReady() ]).then(function(){
+        return new Promise(function(res){ requestAnimationFrame(function(){ requestAnimationFrame(res); }); });
+      }).then(function(){
+        return html2pdf().set({
+          filename: filename,
+          margin: 0,
+          image: { type:'jpeg', quality:0.98 },
+          html2canvas: { scale:2, useCORS:true, backgroundColor:'#ffffff', imageTimeout:15000, windowWidth:794 },
+          jsPDF: { unit:'mm', format:'a4', orientation:'portrait' },
+          pagebreak: { mode:['css','legacy'] }
+        }).from(sheet).output('blob');
+      }).then(function(blob){
         host.innerHTML='';
-        toast('PDF downloaded','ok');
+        if(!blob || blob.size < 1000){ toast('PDF looked empty — try again','err'); return; }
+        deliverPdf(blob, filename);
       }).catch(function(e){
         host.innerHTML='';
-        toast('PDF failed: '+e.message,'err');
+        toast('PDF failed: '+(e&&e.message||e),'err');
       });
     });
   }
